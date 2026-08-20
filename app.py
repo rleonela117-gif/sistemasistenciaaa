@@ -11,11 +11,11 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 
-import database as db
-from config.settings import Config
-from routes.attendance_routes import attendance_bp
-from routes.auth_routes import auth_bp
-from routes.employee_routes import employee_bp
+from backend import database as db
+from backend.config.settings import Config
+from backend.routes.attendance_routes import attendance_bp
+from backend.routes.auth_routes import auth_bp
+from backend.routes.employee_routes import employee_bp
 
 
 def crear_usuarios_por_defecto():
@@ -76,14 +76,11 @@ def crear_usuarios_por_defecto():
     ]
 
     for usuario in usuarios:
-
-        # Revisar si ya existe por código
         existente = db.get_by_codigo(usuario["codigo"])
 
         if existente:
             continue
 
-        # Crear usuario
         db.create(
             codigo=usuario["codigo"],
             nombre_completo=usuario["nombre_completo"],
@@ -100,7 +97,6 @@ def crear_usuarios_por_defecto():
 
 
 def create_app() -> Flask:
-
     app = Flask(__name__)
 
     app.config.from_object(Config)
@@ -114,31 +110,19 @@ def create_app() -> Flask:
         },
     )
 
-    # Inicializar base de datos
+    # Inicializar la base de datos
     db.init_db()
 
-    # Crear administrador y empleados iniciales
+    # Crear administrador y 5 empleados
     crear_usuarios_por_defecto()
 
     # Registrar rutas
-    app.register_blueprint(
-        auth_bp,
-        url_prefix="/api"
-    )
-
-    app.register_blueprint(
-        employee_bp,
-        url_prefix="/api"
-    )
-
-    app.register_blueprint(
-        attendance_bp,
-        url_prefix="/api"
-    )
+    app.register_blueprint(auth_bp, url_prefix="/api")
+    app.register_blueprint(employee_bp, url_prefix="/api")
+    app.register_blueprint(attendance_bp, url_prefix="/api")
 
     @app.route("/")
     def index():
-
         return jsonify(
             {
                 "servicio": "Sistema Asistencia API",
@@ -159,21 +143,11 @@ def create_app() -> Flask:
 
     @app.errorhandler(404)
     def no_encontrado(e):
-
-        return jsonify(
-            {
-                "error": "Ruta no encontrada."
-            }
-        ), 404
+        return jsonify({"error": "Ruta no encontrada."}), 404
 
     @app.errorhandler(500)
     def error_interno(e):
-
-        return jsonify(
-            {
-                "error": "Error interno del servidor."
-            }
-        ), 500
+        return jsonify({"error": "Error interno del servidor."}), 500
 
     return app
 
@@ -182,7 +156,6 @@ app = create_app()
 
 
 if __name__ == "__main__":
-
     app.run(
         host=Config.HOST,
         port=Config.PORT,

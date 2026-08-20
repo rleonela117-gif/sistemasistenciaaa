@@ -12,7 +12,7 @@ from typing import Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config.settings import Config
+from backend.config.settings import Config
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",

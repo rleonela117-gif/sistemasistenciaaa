@@ -1,95 +1,121 @@
-"""
-Reglas de negocio del servidor: cálculo de minutos tarde / trabajados / extra
-(debe coincidir con utils/time_calculator.dart del lado Flutter) y la
-prevención de registros duplicados por UUID, requisito obligatorio del
-proyecto.
-"""
-from datetime import datetime, time
-
-from config.settings import Config
-from services.sheets_service import SheetsService
-
-
-def _minutos_tarde(hora_entrada: datetime) -> int:
-    oficial = hora_entrada.replace(
-        hour=Config.HORA_ENTRADA_OFICIAL.hour,
-        minute=Config.HORA_ENTRADA_OFICIAL.minute,
-        second=0,
-        microsecond=0,
-    )
-    diff = int((hora_entrada - oficial).total_seconds() // 60)
-    return max(diff, 0)
-
-
-def _minutos_extra(hora_salida: datetime) -> int:
-    oficial = hora_salida.replace(
-        hour=Config.HORA_SALIDA_OFICIAL.hour,
-        minute=Config.HORA_SALIDA_OFICIAL.minute,
-        second=0,
-        microsecond=0,
-    )
-    diff = int((hora_salida - oficial).total_seconds() // 60)
-    return max(diff, 0)
-
-
-def _formato_horas(minutos: int) -> str:
-    h, m = divmod(max(minutos, 0), 60)
-    return f"{h}:{m:02d}"
+from backend.services.sheets_service import SheetsService
+from backend.config.settings import Config
 
 
 class AttendanceService:
-    """Procesa el guardado de un lote de asistencias enviado por la app,
-    evitando duplicados y calculando/validando los tiempos antes de
-    escribir en Google Sheets."""
-
     def __init__(self):
-        self.sheets = SheetsService.instance()
+        self.sheets_service = SheetsService.instance()
 
-    def sincronizar_lote(self, registros: list) -> dict:
+    def sincronizar_lote(self, registros):
         sincronizados = []
         errores = []
 
-        for r in registros:
-            id_registro = r.get("id_registro")
-            if not id_registro:
-                errores.append({"id_registro": None, "motivo": "Falta id_registro"})
-                continue
-
+        for registro in registros:
             try:
-                # --- Prevención de duplicados (requisito obligatorio) ---
-                if self.sheets.id_ya_existe(id_registro):
-                    # Ya existe: se considera sincronizado igualmente, para
-                    # que el cliente lo marque como enviado y no reintente.
+                id_registro = registro.get("id_registro")
+                codigo = registro.get("codigo")
+                fecha = registro.get("fecha")
+                tipo = registro.get("tipo")
+                hora = registro.get("hora")
+
+                # Validar campos obligatorios
+                if not id_registro:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta id_registro"
+                    })
+                    continue
+
+                if not codigo:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta codigo"
+                    })
+                    continue
+
+                if not fecha:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta fecha"
+                    })
+                    continue
+
+                if not tipo:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta tipo"
+                    })
+                    continue
+
+                if not hora:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta hora"
+                    })
+                    continue
+
+                # Normalizar datos
+                codigo = str(codigo).strip().upper()
+                tipo = str(tipo).strip().lower()
+
+                # Validar tipo
+                if tipo not in ["entrada", "salida"]:
+                    errores.append({
+                        "registro": registro,
+                        "error": "El tipo debe ser 'entrada' o 'salida'"
+                    })
+                    continue
+
+                # Obtener hoja de asistencias
+                hoja = self.sheets_service._hoja_asistencias()
+
+                # Leer registros existentes para evitar duplicados
+                filas_existentes = hoja.get_all_records()
+
+                # Buscar si ya existe el UUID
+                duplicado = False
+
+                for fila in filas_existentes:
+                    uuid_existente = (
+                        fila.get("id_registro")
+                        or fila.get("ID Registro")
+                        or fila.get("UUID")
+                        or ""
+                    )
+
+                    if str(uuid_existente).strip() == str(id_registro).strip():
+                        duplicado = True
+                        break
+
+                # Si ya existe, no volverlo a guardar
+                if duplicado:
                     sincronizados.append(id_registro)
                     continue
 
-                tipo = r.get("tipo")
-                hora_iso = r.get("hora")
-                hora_dt = datetime.fromisoformat(hora_iso) if hora_iso else datetime.now()
+                # Crear fila para Google Sheets
+                nueva_fila = [
+                    id_registro,
+                    codigo,
+                    fecha,
+                    tipo,
+                    hora
+                ]
 
-                fila = {
-                    "codigo": r.get("codigo"),
-                    "nombre_completo": r.get("nombre_completo"),
-                    "cargo": r.get("cargo"),
-                    "fecha": r.get("fecha"),
-                    "id_registro": id_registro,
-                    "estado": "OK",
-                }
+                # Guardar en Google Sheets
+                hoja.append_row(
+                    nueva_fila,
+                    value_input_option="USER_ENTERED"
+                )
 
-                if tipo == "entrada":
-                    fila["entrada"] = hora_dt.strftime("%I:%M %p")
-                    fila["minutos_tarde"] = r.get("minutos_tarde", _minutos_tarde(hora_dt))
-                else:
-                    fila["salida"] = hora_dt.strftime("%I:%M %p")
-                    minutos_trab = r.get("minutos_trabajados", 0)
-                    minutos_ext = r.get("minutos_extra", _minutos_extra(hora_dt))
-                    fila["horas_trabajadas"] = _formato_horas(minutos_trab)
-                    fila["horas_extras"] = _formato_horas(minutos_ext)
-
-                self.sheets.agregar_asistencia(fila)
                 sincronizados.append(id_registro)
 
-            except Exception as e:  # noqa: BLE001 - se reporta al cliente
-                errores.append({"id_registro": id_registro, "motivo": str(e)})
+            except Exception as e:
+                errores.append({
+                    "registro": registro,
+                    "error": str(e)
+                })
 
-        return {"sincronizados": sincronizados, "errores": errores}
+        return {
+            "sincronizados": sincronizados,
+            "errores": errores
+        }

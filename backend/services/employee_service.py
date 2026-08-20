@@ -1,95 +1,133 @@
-"""
-CRUD de empleados. La base local (SQLite del servidor) es la fuente de
-verdad para autenticación (guarda el hash de la contraseña); Google Sheets
-recibe un espejo de los datos públicos para que el administrador pueda
-consultarlos/editarlos también desde ahí si lo desea.
-"""
-from werkzeug.security import generate_password_hash
-
-import database as db
-from services.sheets_service import SheetsService
+from backend.services.sheets_service import SheetsService
 
 
-class EmployeeService:
+class AttendanceService:
     def __init__(self):
-        self.sheets = SheetsService.instance()
+        self.sheets_service = SheetsService.instance()
 
-    def listar(self) -> list:
-        empleados = db.get_all()
-        return [self._sin_password(e) for e in empleados]
+    def sincronizar_lote(self, registros):
+        sincronizados = []
+        errores = []
 
-    def obtener(self, codigo: str):
-        e = db.get_by_codigo(codigo)
-        return self._sin_password(e) if e else None
-
-    def crear(self, codigo, nombre_completo, cargo, usuario, password, rol="empleado"):
-        if db.get_by_codigo(codigo):
-            raise ValueError(f"Ya existe un empleado con el código {codigo}.")
-        if db.get_by_usuario(usuario):
-            raise ValueError(f"Ya existe un empleado con el usuario {usuario}.")
-
-        password_hash = generate_password_hash(password)
-        db.create(codigo, nombre_completo, cargo, usuario, password_hash, rol)
-
+        # Obtener la hoja una sola vez
         try:
-            self.sheets.agregar_empleado(
-                {
-                    "codigo": codigo,
-                    "nombre_completo": nombre_completo,
-                    "cargo": cargo,
-                    "usuario": usuario,
-                    "rol": rol,
-                }
+            hoja = self.sheets_service._hoja_asistencias()
+            filas_existentes = hoja.get_all_records()
+        except Exception as e:
+            return {
+                "sincronizados": [],
+                "errores": [
+                    {
+                        "error": f"No se pudo conectar con Google Sheets: {str(e)}"
+                    }
+                ]
+            }
+
+        # Obtener los IDs que ya existen
+        ids_existentes = set()
+
+        for fila in filas_existentes:
+            uuid_existente = (
+                fila.get("id_registro")
+                or fila.get("ID Registro")
+                or fila.get("UUID")
+                or ""
             )
-        except Exception:
-            # No bloquea la creación si Sheets falla momentáneamente;
-            # el dato ya quedó guardado de forma segura en el servidor.
-            pass
 
-        return self.obtener(codigo)
+            if uuid_existente:
+                ids_existentes.add(str(uuid_existente).strip())
 
-    def actualizar(self, codigo, **cambios):
-        if not db.get_by_codigo(codigo):
-            raise ValueError(f"No existe un empleado con el código {codigo}.")
+        # Procesar cada registro
+        for registro in registros:
+            try:
+                id_registro = registro.get("id_registro")
+                codigo = registro.get("codigo")
+                fecha = registro.get("fecha")
+                tipo = registro.get("tipo")
+                hora = registro.get("hora")
 
-        campos_db = {}
-        if "nombre_completo" in cambios and cambios["nombre_completo"]:
-            campos_db["nombre_completo"] = cambios["nombre_completo"]
-        if "cargo" in cambios and cambios["cargo"]:
-            campos_db["cargo"] = cambios["cargo"]
-        if "usuario" in cambios and cambios["usuario"]:
-            campos_db["usuario"] = cambios["usuario"]
-        if "rol" in cambios and cambios["rol"]:
-            campos_db["rol"] = cambios["rol"]
-        if "password" in cambios and cambios["password"]:
-            campos_db["password_hash"] = generate_password_hash(cambios["password"])
+                # Validar campos obligatorios
+                if not id_registro:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta id_registro"
+                    })
+                    continue
 
-        db.update(codigo, **campos_db)
+                if not codigo:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta codigo"
+                    })
+                    continue
 
-        try:
-            self.sheets.actualizar_empleado(codigo, cambios)
-        except Exception:
-            pass
+                if not fecha:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta fecha"
+                    })
+                    continue
 
-        return self.obtener(codigo)
+                if not tipo:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta tipo"
+                    })
+                    continue
 
-    def desactivar(self, codigo):
-        if not db.get_by_codigo(codigo):
-            raise ValueError(f"No existe un empleado con el código {codigo}.")
-        db.set_activo(codigo, False)
-        try:
-            self.sheets.desactivar_empleado(codigo)
-        except Exception:
-            pass
-        return self.obtener(codigo)
+                if not hora:
+                    errores.append({
+                        "registro": registro,
+                        "error": "Falta hora"
+                    })
+                    continue
 
-    @staticmethod
-    def _sin_password(empleado: dict) -> dict:
+                # Normalizar datos
+                id_registro = str(id_registro).strip()
+                codigo = str(codigo).strip().upper()
+                fecha = str(fecha).strip()
+                tipo = str(tipo).strip().lower()
+                hora = str(hora).strip()
+
+                # Validar tipo
+                if tipo not in ["entrada", "salida"]:
+                    errores.append({
+                        "registro": registro,
+                        "error": "El tipo debe ser 'entrada' o 'salida'"
+                    })
+                    continue
+
+                # Evitar duplicados
+                if id_registro in ids_existentes:
+                    sincronizados.append(id_registro)
+                    continue
+
+                # Crear nueva fila
+                nueva_fila = [
+                    id_registro,
+                    codigo,
+                    fecha,
+                    tipo,
+                    hora
+                ]
+
+                # Guardar en Google Sheets
+                hoja.append_row(
+                    nueva_fila,
+                    value_input_option="USER_ENTERED"
+                )
+
+                # Agregar ID para evitar duplicados dentro del mismo lote
+                ids_existentes.add(id_registro)
+                sincronizados.append(id_registro)
+
+            except Exception as e:
+                errores.append({
+                    "registro": registro,
+                    "error": str(e)
+                })
+
         return {
-            "codigo": empleado["codigo"],
-            "nombre_completo": empleado["nombre_completo"],
-            "cargo": empleado["cargo"],
-            "usuario": empleado["usuario"],
-            "rol": empleado["rol"],
-            "activo": bool(empleado["activo"]),
+            "sincronizados": sincronizados,
+            "errores": errores
         }

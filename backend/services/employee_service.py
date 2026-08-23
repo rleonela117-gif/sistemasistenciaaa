@@ -1,133 +1,311 @@
+from werkzeug.security import generate_password_hash
+
 from backend.services.sheets_service import SheetsService
 
 
-class AttendanceService:
+class EmployeeService:
     def __init__(self):
         self.sheets_service = SheetsService.instance()
 
-    def sincronizar_lote(self, registros):
-        sincronizados = []
-        errores = []
+    def _obtener_hoja(self):
+        return self.sheets_service._hoja_empleados()
 
-        # Obtener la hoja una sola vez
+    def listar(self):
         try:
-            hoja = self.sheets_service._hoja_asistencias()
-            filas_existentes = hoja.get_all_records()
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
+
+            empleados = []
+
+            for fila in filas:
+                activo = fila.get("Activo", fila.get("activo", True))
+
+                if str(activo).strip().lower() not in [
+                    "false",
+                    "0",
+                    "no",
+                    "inactivo"
+                ]:
+                    empleados.append(fila)
+
+            return empleados
+
         except Exception as e:
+            raise Exception(
+                f"No se pudieron obtener los empleados: {str(e)}"
+            )
+
+    def listar_empleados(self):
+        return self.listar()
+
+    def obtener(self, codigo):
+        try:
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
+
+            codigo = str(codigo).strip().upper()
+
+            for fila in filas:
+                codigo_fila = str(
+                    fila.get("Código")
+                    or fila.get("Codigo")
+                    or fila.get("codigo")
+                    or ""
+                ).strip().upper()
+
+                if codigo_fila == codigo:
+                    return fila
+
+            return None
+
+        except Exception as e:
+            raise Exception(
+                f"No se pudo obtener el empleado: {str(e)}"
+            )
+
+    def obtener_empleado_por_usuario(self, usuario):
+        try:
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
+
+            usuario = str(usuario).strip()
+
+            for fila in filas:
+                usuario_fila = str(
+                    fila.get("Usuario")
+                    or fila.get("usuario")
+                    or ""
+                ).strip()
+
+                if usuario_fila == usuario:
+                    return fila
+
+            return None
+
+        except Exception as e:
+            raise Exception(
+                f"No se pudo obtener el empleado: {str(e)}"
+            )
+
+    def crear(
+        self,
+        codigo,
+        nombre_completo,
+        cargo,
+        usuario,
+        password,
+        rol="empleado"
+    ):
+        try:
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
+
+            codigo = str(codigo).strip().upper()
+            usuario = str(usuario).strip()
+
+            for fila in filas:
+                codigo_fila = str(
+                    fila.get("Código")
+                    or fila.get("Codigo")
+                    or fila.get("codigo")
+                    or ""
+                ).strip().upper()
+
+                usuario_fila = str(
+                    fila.get("Usuario")
+                    or fila.get("usuario")
+                    or ""
+                ).strip()
+
+                if codigo_fila == codigo:
+                    raise ValueError(
+                        "Ya existe un empleado con ese código."
+                    )
+
+                if usuario_fila == usuario:
+                    raise ValueError(
+                        "Ya existe un empleado con ese usuario."
+                    )
+
+            password_hash = generate_password_hash(password)
+
+            nueva_fila = [
+                codigo,
+                nombre_completo,
+                cargo,
+                usuario,
+                password_hash,
+                rol,
+                True
+            ]
+
+            hoja.append_row(
+                nueva_fila,
+                value_input_option="USER_ENTERED"
+            )
+
             return {
-                "sincronizados": [],
-                "errores": [
-                    {
-                        "error": f"No se pudo conectar con Google Sheets: {str(e)}"
-                    }
+                "codigo": codigo,
+                "nombre_completo": nombre_completo,
+                "cargo": cargo,
+                "usuario": usuario,
+                "rol": rol,
+                "activo": True
+            }
+
+        except ValueError:
+            raise
+
+        except Exception as e:
+            raise Exception(
+                f"No se pudo crear el empleado: {str(e)}"
+            )
+
+    def actualizar(self, codigo, **datos):
+        try:
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
+
+            codigo = str(codigo).strip().upper()
+
+            encabezados = hoja.row_values(1)
+
+            numero_fila = None
+            empleado_actual = None
+
+            for indice, fila in enumerate(filas, start=2):
+                codigo_fila = str(
+                    fila.get("Código")
+                    or fila.get("Codigo")
+                    or fila.get("codigo")
+                    or ""
+                ).strip().upper()
+
+                if codigo_fila == codigo:
+                    numero_fila = indice
+                    empleado_actual = fila
+                    break
+
+            if numero_fila is None:
+                raise ValueError("Empleado no encontrado.")
+
+            mapa_columnas = {
+                "nombre_completo": [
+                    "Nombre Completo",
+                    "nombre_completo"
+                ],
+                "cargo": [
+                    "Cargo",
+                    "cargo"
+                ],
+                "usuario": [
+                    "Usuario",
+                    "usuario"
+                ],
+                "password": [
+                    "Password",
+                    "password",
+                    "Password Hash",
+                    "password_hash"
+                ],
+                "rol": [
+                    "Rol",
+                    "rol"
+                ],
+                "activo": [
+                    "Activo",
+                    "activo"
                 ]
             }
 
-        # Obtener los IDs que ya existen
-        ids_existentes = set()
+            for campo, valor in datos.items():
+                if campo not in mapa_columnas:
+                    continue
 
-        for fila in filas_existentes:
-            uuid_existente = (
-                fila.get("id_registro")
-                or fila.get("ID Registro")
-                or fila.get("UUID")
-                or ""
+                if valor is None:
+                    continue
+
+                if campo == "password":
+                    valor = generate_password_hash(str(valor))
+
+                columna = None
+
+                for nombre_columna in mapa_columnas[campo]:
+                    if nombre_columna in encabezados:
+                        columna = encabezados.index(nombre_columna) + 1
+                        break
+
+                if columna:
+                    hoja.update_cell(
+                        numero_fila,
+                        columna,
+                        valor
+                    )
+
+            empleado_actualizado = self.obtener(codigo)
+
+            return empleado_actualizado
+
+        except ValueError:
+            raise
+
+        except Exception as e:
+            raise Exception(
+                f"No se pudo actualizar el empleado: {str(e)}"
             )
 
-            if uuid_existente:
-                ids_existentes.add(str(uuid_existente).strip())
+    def desactivar(self, codigo):
+        try:
+            hoja = self._obtener_hoja()
+            filas = hoja.get_all_records()
 
-        # Procesar cada registro
-        for registro in registros:
-            try:
-                id_registro = registro.get("id_registro")
-                codigo = registro.get("codigo")
-                fecha = registro.get("fecha")
-                tipo = registro.get("tipo")
-                hora = registro.get("hora")
+            codigo = str(codigo).strip().upper()
 
-                # Validar campos obligatorios
-                if not id_registro:
-                    errores.append({
-                        "registro": registro,
-                        "error": "Falta id_registro"
-                    })
-                    continue
+            encabezados = hoja.row_values(1)
 
-                if not codigo:
-                    errores.append({
-                        "registro": registro,
-                        "error": "Falta codigo"
-                    })
-                    continue
+            numero_fila = None
 
-                if not fecha:
-                    errores.append({
-                        "registro": registro,
-                        "error": "Falta fecha"
-                    })
-                    continue
+            for indice, fila in enumerate(filas, start=2):
+                codigo_fila = str(
+                    fila.get("Código")
+                    or fila.get("Codigo")
+                    or fila.get("codigo")
+                    or ""
+                ).strip().upper()
 
-                if not tipo:
-                    errores.append({
-                        "registro": registro,
-                        "error": "Falta tipo"
-                    })
-                    continue
+                if codigo_fila == codigo:
+                    numero_fila = indice
+                    break
 
-                if not hora:
-                    errores.append({
-                        "registro": registro,
-                        "error": "Falta hora"
-                    })
-                    continue
+            if numero_fila is None:
+                raise ValueError("Empleado no encontrado.")
 
-                # Normalizar datos
-                id_registro = str(id_registro).strip()
-                codigo = str(codigo).strip().upper()
-                fecha = str(fecha).strip()
-                tipo = str(tipo).strip().lower()
-                hora = str(hora).strip()
+            columna_activo = None
 
-                # Validar tipo
-                if tipo not in ["entrada", "salida"]:
-                    errores.append({
-                        "registro": registro,
-                        "error": "El tipo debe ser 'entrada' o 'salida'"
-                    })
-                    continue
+            for nombre in ["Activo", "activo"]:
+                if nombre in encabezados:
+                    columna_activo = encabezados.index(nombre) + 1
+                    break
 
-                # Evitar duplicados
-                if id_registro in ids_existentes:
-                    sincronizados.append(id_registro)
-                    continue
-
-                # Crear nueva fila
-                nueva_fila = [
-                    id_registro,
-                    codigo,
-                    fecha,
-                    tipo,
-                    hora
-                ]
-
-                # Guardar en Google Sheets
-                hoja.append_row(
-                    nueva_fila,
-                    value_input_option="USER_ENTERED"
+            if columna_activo is None:
+                raise Exception(
+                    "No existe una columna 'Activo' en la hoja de empleados."
                 )
 
-                # Agregar ID para evitar duplicados dentro del mismo lote
-                ids_existentes.add(id_registro)
-                sincronizados.append(id_registro)
+            hoja.update_cell(
+                numero_fila,
+                columna_activo,
+                False
+            )
 
-            except Exception as e:
-                errores.append({
-                    "registro": registro,
-                    "error": str(e)
-                })
+            empleado = self.obtener(codigo)
 
-        return {
-            "sincronizados": sincronizados,
-            "errores": errores
-        }
+            return empleado
+
+        except ValueError:
+            raise
+
+        except Exception as e:
+            raise Exception(
+                f"No se pudo desactivar el empleado: {str(e)}"
+            )

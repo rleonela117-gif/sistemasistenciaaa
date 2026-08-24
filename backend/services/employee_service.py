@@ -1,91 +1,51 @@
 from werkzeug.security import generate_password_hash
 
+from backend import database as db
 from backend.services.sheets_service import SheetsService
-
 
 class EmployeeService:
     def __init__(self):
-        self.sheets_service = SheetsService.instance()
+        self.sheets_service = None
 
-    def _obtener_hoja(self):
-        return self.sheets_service._hoja_empleados()
+    @staticmethod
+    def _sin_password(empleado):
+        if not empleado:
+            return None
+
+        return {
+            "codigo": empleado.get("codigo", ""),
+            "nombre_completo": empleado.get("nombre_completo", ""),
+            "cargo": empleado.get("cargo", ""),
+            "usuario": empleado.get("usuario", ""),
+            "rol": empleado.get("rol", "empleado"),
+            "activo": bool(empleado.get("activo", True))
+        }
 
     def listar(self):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        empleados = db.get_all()
 
-            empleados = []
-
-            for fila in filas:
-                activo = fila.get("Activo", fila.get("activo", True))
-
-                if str(activo).strip().lower() not in [
-                    "false",
-                    "0",
-                    "no",
-                    "inactivo"
-                ]:
-                    empleados.append(fila)
-
-            return empleados
-
-        except Exception as e:
-            raise Exception(
-                f"No se pudieron obtener los empleados: {str(e)}"
-            )
+        return [
+            self._sin_password(empleado)
+            for empleado in empleados
+            if empleado.get("activo", 1)
+        ]
 
     def listar_empleados(self):
         return self.listar()
 
     def obtener(self, codigo):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        codigo = str(codigo).strip().upper()
 
-            codigo = str(codigo).strip().upper()
+        empleado = db.get_by_codigo(codigo)
 
-            for fila in filas:
-                codigo_fila = str(
-                    fila.get("Código")
-                    or fila.get("Codigo")
-                    or fila.get("codigo")
-                    or ""
-                ).strip().upper()
-
-                if codigo_fila == codigo:
-                    return fila
-
-            return None
-
-        except Exception as e:
-            raise Exception(
-                f"No se pudo obtener el empleado: {str(e)}"
-            )
+        return self._sin_password(empleado)
 
     def obtener_empleado_por_usuario(self, usuario):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        usuario = str(usuario).strip()
 
-            usuario = str(usuario).strip()
+        empleado = db.get_by_usuario(usuario)
 
-            for fila in filas:
-                usuario_fila = str(
-                    fila.get("Usuario")
-                    or fila.get("usuario")
-                    or ""
-                ).strip()
-
-                if usuario_fila == usuario:
-                    return fila
-
-            return None
-
-        except Exception as e:
-            raise Exception(
-                f"No se pudo obtener el empleado: {str(e)}"
-            )
+        return self._sin_password(empleado)
 
     def crear(
         self,
@@ -96,216 +56,118 @@ class EmployeeService:
         password,
         rol="empleado"
     ):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        codigo = str(codigo).strip().upper()
+        nombre_completo = str(nombre_completo).strip()
+        cargo = str(cargo).strip()
+        usuario = str(usuario).strip()
+        rol = str(rol).strip().lower()
 
-            codigo = str(codigo).strip().upper()
-            usuario = str(usuario).strip()
+        if not codigo:
+            raise ValueError("El código es obligatorio.")
 
-            for fila in filas:
-                codigo_fila = str(
-                    fila.get("Código")
-                    or fila.get("Codigo")
-                    or fila.get("codigo")
-                    or ""
-                ).strip().upper()
+        if not nombre_completo:
+            raise ValueError("El nombre completo es obligatorio.")
 
-                usuario_fila = str(
-                    fila.get("Usuario")
-                    or fila.get("usuario")
-                    or ""
-                ).strip()
+        if not cargo:
+            raise ValueError("El cargo es obligatorio.")
 
-                if codigo_fila == codigo:
-                    raise ValueError(
-                        "Ya existe un empleado con ese código."
-                    )
+        if not usuario:
+            raise ValueError("El usuario es obligatorio.")
 
-                if usuario_fila == usuario:
-                    raise ValueError(
-                        "Ya existe un empleado con ese usuario."
-                    )
+        if not password:
+            raise ValueError("La contraseña es obligatoria.")
 
-            password_hash = generate_password_hash(password)
-
-            nueva_fila = [
-                codigo,
-                nombre_completo,
-                cargo,
-                usuario,
-                password_hash,
-                rol,
-                True
-            ]
-
-            hoja.append_row(
-                nueva_fila,
-                value_input_option="USER_ENTERED"
+        if db.get_by_codigo(codigo):
+            raise ValueError(
+                "Ya existe un empleado con ese código."
             )
 
-            return {
-                "codigo": codigo,
-                "nombre_completo": nombre_completo,
-                "cargo": cargo,
-                "usuario": usuario,
-                "rol": rol,
-                "activo": True
-            }
-
-        except ValueError:
-            raise
-
-        except Exception as e:
-            raise Exception(
-                f"No se pudo crear el empleado: {str(e)}"
+        if db.get_by_usuario(usuario):
+            raise ValueError(
+                "Ya existe un empleado con ese usuario."
             )
+
+        password_hash = generate_password_hash(password)
+
+        db.create(
+            codigo=codigo,
+            nombre_completo=nombre_completo,
+            cargo=cargo,
+            usuario=usuario,
+            password_hash=password_hash,
+            rol=rol
+        )
+
+        empleado = db.get_by_codigo(codigo)
+
+        return self._sin_password(empleado)
 
     def actualizar(self, codigo, **datos):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        codigo = str(codigo).strip().upper()
 
-            codigo = str(codigo).strip().upper()
+        empleado = db.get_by_codigo(codigo)
 
-            encabezados = hoja.row_values(1)
+        if not empleado:
+            raise ValueError("Empleado no encontrado.")
 
-            numero_fila = None
-            empleado_actual = None
+        campos_permitidos = [
+            "nombre_completo",
+            "cargo",
+            "usuario",
+            "rol",
+            "activo"
+        ]
 
-            for indice, fila in enumerate(filas, start=2):
-                codigo_fila = str(
-                    fila.get("Código")
-                    or fila.get("Codigo")
-                    or fila.get("codigo")
-                    or ""
-                ).strip().upper()
+        campos_actualizar = {}
 
-                if codigo_fila == codigo:
-                    numero_fila = indice
-                    empleado_actual = fila
-                    break
+        for campo in campos_permitidos:
+            if campo in datos and datos[campo] is not None:
+                valor = datos[campo]
 
-            if numero_fila is None:
-                raise ValueError("Empleado no encontrado.")
+                if campo == "activo":
+                    valor = 1 if bool(valor) else 0
+                else:
+                    valor = str(valor).strip()
 
-            mapa_columnas = {
-                "nombre_completo": [
-                    "Nombre Completo",
-                    "nombre_completo"
-                ],
-                "cargo": [
-                    "Cargo",
-                    "cargo"
-                ],
-                "usuario": [
-                    "Usuario",
-                    "usuario"
-                ],
-                "password": [
-                    "Password",
-                    "password",
-                    "Password Hash",
-                    "password_hash"
-                ],
-                "rol": [
-                    "Rol",
-                    "rol"
-                ],
-                "activo": [
-                    "Activo",
-                    "activo"
-                ]
-            }
+                campos_actualizar[campo] = valor
 
-            for campo, valor in datos.items():
-                if campo not in mapa_columnas:
-                    continue
-
-                if valor is None:
-                    continue
-
-                if campo == "password":
-                    valor = generate_password_hash(str(valor))
-
-                columna = None
-
-                for nombre_columna in mapa_columnas[campo]:
-                    if nombre_columna in encabezados:
-                        columna = encabezados.index(nombre_columna) + 1
-                        break
-
-                if columna:
-                    hoja.update_cell(
-                        numero_fila,
-                        columna,
-                        valor
-                    )
-
-            empleado_actualizado = self.obtener(codigo)
-
-            return empleado_actualizado
-
-        except ValueError:
-            raise
-
-        except Exception as e:
-            raise Exception(
-                f"No se pudo actualizar el empleado: {str(e)}"
+        if "password" in datos and datos["password"]:
+            campos_actualizar["password_hash"] = (
+                generate_password_hash(
+                    str(datos["password"])
+                )
             )
 
-    def desactivar(self, codigo):
-        try:
-            hoja = self._obtener_hoja()
-            filas = hoja.get_all_records()
+        if "usuario" in campos_actualizar:
+            usuario_existente = db.get_by_usuario(
+                campos_actualizar["usuario"]
+            )
 
-            codigo = str(codigo).strip().upper()
-
-            encabezados = hoja.row_values(1)
-
-            numero_fila = None
-
-            for indice, fila in enumerate(filas, start=2):
-                codigo_fila = str(
-                    fila.get("Código")
-                    or fila.get("Codigo")
-                    or fila.get("codigo")
-                    or ""
-                ).strip().upper()
-
-                if codigo_fila == codigo:
-                    numero_fila = indice
-                    break
-
-            if numero_fila is None:
-                raise ValueError("Empleado no encontrado.")
-
-            columna_activo = None
-
-            for nombre in ["Activo", "activo"]:
-                if nombre in encabezados:
-                    columna_activo = encabezados.index(nombre) + 1
-                    break
-
-            if columna_activo is None:
-                raise Exception(
-                    "No existe una columna 'Activo' en la hoja de empleados."
+            if (
+                usuario_existente
+                and usuario_existente["codigo"] != codigo
+            ):
+                raise ValueError(
+                    "Ya existe otro empleado con ese usuario."
                 )
 
-            hoja.update_cell(
-                numero_fila,
-                columna_activo,
-                False
-            )
+        if campos_actualizar:
+            db.update(codigo, **campos_actualizar)
 
-            empleado = self.obtener(codigo)
+        empleado_actualizado = db.get_by_codigo(codigo)
 
-            return empleado
+        return self._sin_password(empleado_actualizado)
 
-        except ValueError:
-            raise
+    def desactivar(self, codigo):
+        codigo = str(codigo).strip().upper()
 
-        except Exception as e:
-            raise Exception(
-                f"No se pudo desactivar el empleado: {str(e)}"
-            )
+        empleado = db.get_by_codigo(codigo)
+
+        if not empleado:
+            raise ValueError("Empleado no encontrado.")
+
+        db.set_activo(codigo, False)
+
+        empleado_actualizado = db.get_by_codigo(codigo)
+
+        return self._sin_password(empleado_actualizado)

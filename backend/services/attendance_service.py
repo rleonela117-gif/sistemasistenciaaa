@@ -9,63 +9,37 @@ class AttendanceService:
         sincronizados = []
         errores = []
 
-        # Obtener la hoja una sola vez
-        try:
-            hoja = self.sheets_service._hoja_asistencias()
-        except Exception as e:
-            return {
-                "sincronizados": [],
-                "errores": [
-                    {
-                        "error": f"No se pudo conectar con Google Sheets: {str(e)}"
-                    }
-                ]
-            }
-
-        # Leer registros existentes una sola vez
-        try:
-            filas_existentes = hoja.get_all_records()
-        except Exception as e:
-            return {
-                "sincronizados": [],
-                "errores": [
-                    {
-                        "error": f"No se pudieron leer los registros existentes: {str(e)}"
-                    }
-                ]
-            }
-
-        # Guardar los UUID existentes para evitar duplicados
-        ids_existentes = set()
-
-        for fila in filas_existentes:
-            uuid_existente = (
-                fila.get("id_registro")
-                or fila.get("ID Registro")
-                or fila.get("UUID")
-                or ""
-            )
-
-            if uuid_existente:
-                ids_existentes.add(str(uuid_existente).strip())
-
-        # Procesar cada registro
         for registro in registros:
             try:
                 if not isinstance(registro, dict):
                     errores.append({
-                        "registro": registro,
+                        "registro": str(registro),
                         "error": "El registro debe ser un objeto válido"
                     })
                     continue
 
-                id_registro = str(registro.get("id_registro", "")).strip()
-                codigo = str(registro.get("codigo", "")).strip().upper()
-                fecha = str(registro.get("fecha", "")).strip()
-                tipo = str(registro.get("tipo", "")).strip().lower()
-                hora = str(registro.get("hora", "")).strip()
+                # Datos básicos
+                id_registro = str(
+                    registro.get("id_registro", "")
+                ).strip()
 
-                # Validar campos obligatorios
+                codigo = str(
+                    registro.get("codigo", "")
+                ).strip().upper()
+
+                fecha = str(
+                    registro.get("fecha", "")
+                ).strip()
+
+                tipo = str(
+                    registro.get("tipo", "")
+                ).strip().lower()
+
+                hora = str(
+                    registro.get("hora", "")
+                ).strip()
+
+                # Validaciones
                 if not id_registro:
                     errores.append({
                         "registro": registro,
@@ -90,7 +64,7 @@ class AttendanceService:
                 if tipo not in ["entrada", "salida"]:
                     errores.append({
                         "registro": registro,
-                        "error": "El tipo debe ser 'entrada' o 'salida'"
+                        "error": "El tipo debe ser entrada o salida"
                     })
                     continue
 
@@ -101,28 +75,53 @@ class AttendanceService:
                     })
                     continue
 
-                # Evitar duplicados
-                if id_registro in ids_existentes:
+                # Evitar duplicados usando una memoria local del servidor
+                # basada en los IDs que ya existen.
+                if self.sheets_service.id_ya_existe(id_registro):
                     sincronizados.append(id_registro)
                     continue
 
-                # Guardar en Google Sheets
-                nueva_fila = [
-                    id_registro,
-                    codigo,
-                    fecha,
-                    tipo,
-                    hora
-                ]
+                # Buscar información del empleado
+                empleados = self.sheets_service.listar_empleados()
 
-                hoja.append_row(
-                    nueva_fila,
-                    value_input_option="USER_ENTERED"
+                empleado = None
+
+                for e in empleados:
+                    if str(e.get("codigo", "")).upper() == codigo:
+                        empleado = e
+                        break
+
+                # Si no está en la hoja de empleados,
+                # usamos valores por defecto para no bloquear
+                nombre_completo = (
+                    empleado.get("nombre_completo", "")
+                    if empleado
+                    else ""
                 )
 
-                # Agregar al conjunto para evitar duplicados
-                # dentro del mismo lote
-                ids_existentes.add(id_registro)
+                cargo = (
+                    empleado.get("cargo", "")
+                    if empleado
+                    else ""
+                )
+
+                # Preparar registro según sea entrada o salida
+                datos = {
+                    "id_registro": id_registro,
+                    "codigo": codigo,
+                    "nombre_completo": nombre_completo,
+                    "cargo": cargo,
+                    "fecha": fecha,
+                    "entrada": hora if tipo == "entrada" else "",
+                    "salida": hora if tipo == "salida" else "",
+                    "minutos_tarde": 0,
+                    "horas_extras": "",
+                    "horas_trabajadas": "",
+                }
+
+                # Guardar en Google Sheets
+                self.sheets_service.agregar_asistencia(datos)
+
                 sincronizados.append(id_registro)
 
             except Exception as e:

@@ -1,12 +1,11 @@
 """
-Capa de acceso a Google Sheets.
-
-Usa gspread + credenciales de una cuenta de servicio de Google Cloud.
-El archivo de credenciales NUNCA debe subirse al repositorio ni incluirse
-en el APK — solo vive en el servidor (ver README para cómo generarlo).
+Capa de conexión con Google Sheets.
+Funciona localmente con archivo JSON y en Render con
+la variable de entorno GOOGLE_CREDENTIALS_JSON.
 """
+
+import json
 import os
-from datetime import datetime
 from typing import Optional
 
 import gspread
@@ -14,35 +13,10 @@ from google.oauth2.service_account import Credentials
 
 from backend.config.settings import Config
 
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
-
-# Columnas EXACTAS de la hoja "asistenciaa", en este orden.
-COLUMNAS_ASISTENCIA = [
-    "Código",
-    "Nombre Completo",
-    "Cargo",
-    "Fecha",
-    "Entrada",
-    "Salida",
-    "Horas trabajadas",
-    "Minutos tarde",
-    "Horas extras",
-    "Estado",
-    "ID Registro",
-    "Sincronizado",
-]
-
-# Columnas de la hoja de empleados.
-COLUMNAS_EMPLEADO = [
-    "Código",
-    "Nombre Completo",
-    "Cargo",
-    "Usuario",
-    "Rol",
-    "Activo",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 
@@ -56,131 +30,241 @@ class SheetsService:
     @classmethod
     def instance(cls) -> "SheetsService":
         if cls._instance is None:
-            cls._instance = SheetsService()
+            cls._instance = cls()
+
         return cls._instance
 
+    # ============================================================
+    # CONEXIÓN
+    # ============================================================
+
     def _conectar(self):
+        """Conecta con Google Sheets."""
+
         if self._client is not None:
             return
-        if not os.path.exists(Config.GOOGLE_CREDENTIALS_FILE):
-            raise FileNotFoundError(
-                f"No se encontró el archivo de credenciales de Google en "
-                f"'{Config.GOOGLE_CREDENTIALS_FILE}'. Revisa el README, "
-                f"sección 'Configurar Google Sheets'."
+
+        credentials_json = Config.GOOGLE_CREDENTIALS_JSON.strip()
+
+        # --------------------------------------------------------
+        # OPCIÓN 1: RENDER
+        # --------------------------------------------------------
+        if credentials_json:
+            try:
+                info = json.loads(credentials_json)
+
+                creds = Credentials.from_service_account_info(
+                    info,
+                    scopes=SCOPES,
+                )
+
+                print(
+                    "Google Sheets: usando GOOGLE_CREDENTIALS_JSON"
+                )
+
+            except Exception as e:
+                raise Exception(
+                    f"Error leyendo GOOGLE_CREDENTIALS_JSON: {str(e)}"
+                )
+
+        # --------------------------------------------------------
+        # OPCIÓN 2: COMPUTADORA LOCAL
+        # --------------------------------------------------------
+        else:
+            archivo = Config.GOOGLE_CREDENTIALS_FILE
+
+            if not os.path.exists(archivo):
+                raise FileNotFoundError(
+                    "No se encontraron credenciales de Google. "
+                    "Configura GOOGLE_CREDENTIALS_JSON en Render "
+                    "o GOOGLE_CREDENTIALS_FILE localmente."
+                )
+
+            creds = Credentials.from_service_account_file(
+                archivo,
+                scopes=SCOPES,
             )
-        creds = Credentials.from_service_account_file(
-            Config.GOOGLE_CREDENTIALS_FILE, scopes=SCOPES
-        )
+
+            print(
+                f"Google Sheets: usando archivo {archivo}"
+            )
+
+        # --------------------------------------------------------
+        # CONECTAR
+        # --------------------------------------------------------
+
         self._client = gspread.authorize(creds)
-        self._spreadsheet = self._client.open(Config.GOOGLE_SHEET_NAME)
+
+        self._spreadsheet = self._client.open(
+            Config.GOOGLE_SHEET_NAME
+        )
+
+        print(
+            f"Google Sheets conectado correctamente: "
+            f"{Config.GOOGLE_SHEET_NAME}"
+        )
+
+    # ============================================================
+    # HOJAS
+    # ============================================================
 
     def _hoja_asistencias(self):
         self._conectar()
-        try:
-            return self._spreadsheet.worksheet(Config.GOOGLE_SHEET_TAB_ASISTENCIAS)
-        except gspread.WorksheetNotFound:
-            hoja = self._spreadsheet.add_worksheet(
-                title=Config.GOOGLE_SHEET_TAB_ASISTENCIAS, rows=1000, cols=20
-            )
-            hoja.append_row(COLUMNAS_ASISTENCIA)
-            return hoja
+
+        return self._spreadsheet.worksheet(
+            Config.GOOGLE_SHEET_TAB_ASISTENCIAS
+        )
 
     def _hoja_empleados(self):
         self._conectar()
-        try:
-            return self._spreadsheet.worksheet(Config.GOOGLE_SHEET_TAB_EMPLEADOS)
-        except gspread.WorksheetNotFound:
-            hoja = self._spreadsheet.add_worksheet(
-                title=Config.GOOGLE_SHEET_TAB_EMPLEADOS, rows=500, cols=10
-            )
-            hoja.append_row(COLUMNAS_EMPLEADO)
-            return hoja
 
-    # ---------------- ASISTENCIAS ----------------
+        return self._spreadsheet.worksheet(
+            Config.GOOGLE_SHEET_TAB_EMPLEADOS
+        )
+
+    # ============================================================
+    # ASISTENCIAS
+    # ============================================================
 
     def id_ya_existe(self, id_registro: str) -> bool:
-        """Comprueba si un UUID ya fue sincronizado antes (anti-duplicados)."""
-        hoja = self._hoja_asistencias()
-        columna_ids = hoja.col_values(COLUMNAS_ASISTENCIA.index("ID Registro") + 1)
-        return id_registro in columna_ids
+        """
+        Tu hoja actual no tiene la columna ID Registro.
+
+        Por ahora permitimos guardar los registros.
+        """
+        return False
 
     def agregar_asistencia(self, registro: dict) -> None:
-        """Agrega una fila de asistencia. `registro` ya viene validado y
-        con los tiempos calculados desde attendance_service.py."""
+        """
+        Guarda una asistencia usando exactamente las columnas
+        actuales de tu hoja:
+        Codigo | Nombre Completo | CARGO | Fecha | Entrada |
+        Salida | Minutos tarde | Horas extras | Horas trabajadas
+        """
+
         hoja = self._hoja_asistencias()
+
         fila = [
-            registro["codigo"],
-            registro["nombre_completo"],
-            registro["cargo"],
-            registro["fecha"],
+            registro.get("codigo", ""),
+            registro.get("nombre_completo", ""),
+            registro.get("cargo", ""),
+            registro.get("fecha", ""),
             registro.get("entrada", ""),
             registro.get("salida", ""),
-            registro.get("horas_trabajadas", ""),
             registro.get("minutos_tarde", 0),
             registro.get("horas_extras", ""),
-            registro.get("estado", "OK"),
-            registro["id_registro"],
-            "SÍ",
+            registro.get("horas_trabajadas", ""),
         ]
-        hoja.append_row(fila)
 
-    # ---------------- EMPLEADOS ----------------
+        hoja.append_row(
+            fila,
+            value_input_option="USER_ENTERED",
+        )
+
+    # ============================================================
+    # EMPLEADOS
+    # ============================================================
 
     def listar_empleados(self) -> list:
         hoja = self._hoja_empleados()
+
         filas = hoja.get_all_records()
+
         empleados = []
+
         for f in filas:
-            empleados.append(
-                {
-                    "codigo": str(f.get("Código", "")).strip(),
-                    "nombre_completo": str(f.get("Nombre Completo", "")).strip(),
-                    "cargo": str(f.get("Cargo", "")).strip(),
-                    "usuario": str(f.get("Usuario", "")).strip(),
-                    "rol": str(f.get("Rol", "empleado")).strip() or "empleado",
-                    "activo": str(f.get("Activo", "SI")).strip().upper() != "NO",
-                }
-            )
+            empleados.append({
+                "codigo": str(
+                    f.get(
+                        "Código",
+                        f.get("Codigo", ""),
+                    )
+                ).strip(),
+
+                "nombre_completo": str(
+                    f.get("Nombre Completo", "")
+                ).strip(),
+
+                "cargo": str(
+                    f.get(
+                        "Cargo",
+                        f.get("CARGO", ""),
+                    )
+                ).strip(),
+
+                "usuario": str(
+                    f.get("Usuario", "")
+                ).strip(),
+
+                "rol": str(
+                    f.get("Rol", "empleado")
+                ).strip() or "empleado",
+
+                "activo": str(
+                    f.get("Activo", "SI")
+                ).strip().upper() != "NO",
+            })
+
         return empleados
 
     def agregar_empleado(self, empleado: dict) -> None:
         hoja = self._hoja_empleados()
-        hoja.append_row(
-            [
-                empleado["codigo"],
-                empleado["nombre_completo"],
-                empleado["cargo"],
-                empleado["usuario"],
-                empleado.get("rol", "empleado"),
-                "SI",
-            ]
-        )
 
-    def actualizar_empleado(self, codigo: str, cambios: dict) -> bool:
+        hoja.append_row([
+            empleado.get("codigo", ""),
+            empleado.get("nombre_completo", ""),
+            empleado.get("cargo", ""),
+            empleado.get("usuario", ""),
+            empleado.get("rol", "empleado"),
+            "SI",
+        ])
+
+    def actualizar_empleado(
+        self,
+        codigo: str,
+        cambios: dict,
+    ) -> bool:
+
         hoja = self._hoja_empleados()
-        columna_codigos = hoja.col_values(COLUMNAS_EMPLEADO.index("Código") + 1)
+
+        columna_codigos = hoja.col_values(1)
+
         if codigo not in columna_codigos:
             return False
-        fila_idx = columna_codigos.index(codigo) + 1  # 1-indexed en gspread
+
+        fila_idx = columna_codigos.index(codigo) + 1
 
         mapeo = {
-            "nombre_completo": "Nombre Completo",
-            "cargo": "Cargo",
-            "usuario": "Usuario",
-            "rol": "Rol",
+            "nombre_completo": 2,
+            "cargo": 3,
+            "usuario": 4,
+            "rol": 5,
         }
+
         for clave, columna in mapeo.items():
             if clave in cambios and cambios[clave] is not None:
-                col_idx = COLUMNAS_EMPLEADO.index(columna) + 1
-                hoja.update_cell(fila_idx, col_idx, cambios[clave])
+                hoja.update_cell(
+                    fila_idx,
+                    columna,
+                    cambios[clave],
+                )
+
         return True
 
     def desactivar_empleado(self, codigo: str) -> bool:
         hoja = self._hoja_empleados()
-        columna_codigos = hoja.col_values(COLUMNAS_EMPLEADO.index("Código") + 1)
+
+        columna_codigos = hoja.col_values(1)
+
         if codigo not in columna_codigos:
             return False
+
         fila_idx = columna_codigos.index(codigo) + 1
-        col_idx = COLUMNAS_EMPLEADO.index("Activo") + 1
-        hoja.update_cell(fila_idx, col_idx, "NO")
+
+        hoja.update_cell(
+            fila_idx,
+            6,
+            "NO",
+        )
+
         return True

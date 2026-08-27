@@ -14,11 +14,16 @@ class AttendanceService:
                 if not isinstance(registro, dict):
                     errores.append({
                         "registro": str(registro),
-                        "error": "El registro debe ser un objeto válido"
+                        "error": (
+                            "El registro debe ser un objeto válido"
+                        ),
                     })
                     continue
 
-                # Datos básicos
+                # ====================================================
+                # DATOS
+                # ====================================================
+
                 id_registro = str(
                     registro.get("id_registro", "")
                 ).strip()
@@ -39,98 +44,180 @@ class AttendanceService:
                     registro.get("hora", "")
                 ).strip()
 
-                # Validaciones
+                # ====================================================
+                # VALIDACIONES
+                # ====================================================
+
                 if not id_registro:
                     errores.append({
                         "registro": registro,
-                        "error": "Falta id_registro"
+                        "error": "Falta id_registro",
                     })
                     continue
 
                 if not codigo:
                     errores.append({
                         "registro": registro,
-                        "error": "Falta codigo"
+                        "error": "Falta codigo",
                     })
                     continue
 
                 if not fecha:
                     errores.append({
                         "registro": registro,
-                        "error": "Falta fecha"
+                        "error": "Falta fecha",
                     })
                     continue
 
-                if tipo not in ["entrada", "salida"]:
+                if tipo not in (
+                    "entrada",
+                    "salida",
+                ):
                     errores.append({
                         "registro": registro,
-                        "error": "El tipo debe ser entrada o salida"
+                        "error": (
+                            "El tipo debe ser entrada o salida"
+                        ),
                     })
                     continue
 
                 if not hora:
                     errores.append({
                         "registro": registro,
-                        "error": "Falta hora"
+                        "error": "Falta hora",
                     })
                     continue
 
-                # Evitar duplicados usando una memoria local del servidor
-                # basada en los IDs que ya existen.
-                if self.sheets_service.id_ya_existe(id_registro):
-                    sincronizados.append(id_registro)
+                # ====================================================
+                # DUPLICADOS
+                # ====================================================
+
+                if self.sheets_service.id_ya_existe(
+                    id_registro
+                ):
+                    sincronizados.append(
+                        id_registro
+                    )
                     continue
 
-                # Buscar información del empleado
-                empleados = self.sheets_service.listar_empleados()
+                # ====================================================
+                # BUSCAR EMPLEADO
+                # ====================================================
+
+                empleados = (
+                    self.sheets_service.listar_empleados()
+                )
 
                 empleado = None
 
                 for e in empleados:
-                    if str(e.get("codigo", "")).upper() == codigo:
+                    codigo_empleado = str(
+                        e.get(
+                            "codigo",
+                            "",
+                        )
+                    ).strip().upper()
+
+                    if codigo_empleado == codigo:
                         empleado = e
                         break
 
-                # Si no está en la hoja de empleados,
-                # usamos valores por defecto para no bloquear
                 nombre_completo = (
-                    empleado.get("nombre_completo", "")
+                    empleado.get(
+                        "nombre_completo",
+                        "",
+                    )
                     if empleado
-                    else ""
+                    else str(
+                        registro.get(
+                            "nombre_completo",
+                            "",
+                        )
+                    )
                 )
 
                 cargo = (
-                    empleado.get("cargo", "")
+                    empleado.get(
+                        "cargo",
+                        "",
+                    )
                     if empleado
-                    else ""
+                    else str(
+                        registro.get(
+                            "cargo",
+                            "",
+                        )
+                    )
                 )
 
-                # Preparar registro según sea entrada o salida
+                # ====================================================
+                # DATOS PARA SHEETS
+                # ====================================================
+
                 datos = {
                     "id_registro": id_registro,
+
                     "codigo": codigo,
-                    "nombre_completo": nombre_completo,
+
+                    "nombre_completo": (
+                        nombre_completo
+                    ),
+
                     "cargo": cargo,
+
                     "fecha": fecha,
-                    "entrada": hora if tipo == "entrada" else "",
-                    "salida": hora if tipo == "salida" else "",
-                    "minutos_tarde": 0,
-                    "horas_extras": "",
-                    "horas_trabajadas": "",
+
+                    "entrada": (
+                        hora
+                        if tipo == "entrada"
+                        else ""
+                    ),
+
+                    "salida": (
+                        hora
+                        if tipo == "salida"
+                        else ""
+                    ),
+
+                    "minutos_tarde": registro.get(
+                        "minutos_tarde",
+                        0,
+                    ),
+
+                    "horas_trabajadas": (
+                        registro.get(
+                            "minutos_trabajados",
+                            0,
+                        )
+                    ),
+
+                    "horas_extras": (
+                        registro.get(
+                            "minutos_extra",
+                            0,
+                        )
+                    ),
                 }
 
-                # Guardar en Google Sheets
-                self.sheets_service.agregar_asistencia(datos)
+                # ====================================================
+                # GUARDAR
+                # ====================================================
 
-                sincronizados.append(id_registro)
+                self.sheets_service.agregar_asistencia(
+                    datos
+                )
+
+                sincronizados.append(
+                    id_registro
+                )
 
             except Exception as e:
                 errores.append({
                     "registro": registro,
-                    "error": str(e)
+                    "error": str(e),
                 })
 
         return {
             "sincronizados": sincronizados,
-            "errores": errores
+            "errores": errores,
         }

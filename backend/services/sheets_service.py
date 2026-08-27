@@ -1,7 +1,16 @@
-"""
-Capa de conexión con Google Sheets.
-Funciona localmente con archivo JSON y en Render con
-la variable de entorno GOOGLE_CREDENTIALS_JSON.
+﻿"""
+Servicio de conexión con Google Sheets.
+
+Las nuevas asistencias se guardan así:
+
+Entrada:
+    crea una fila nueva.
+
+Salida:
+    busca la entrada pendiente del mismo empleado y fecha
+    y completa la misma fila.
+
+Las asistencias antiguas no se modifican ni se reorganizan.
 """
 
 import json
@@ -39,16 +48,11 @@ class SheetsService:
     # ============================================================
 
     def _conectar(self):
-        """Conecta con Google Sheets."""
-
         if self._client is not None:
             return
 
         credentials_json = Config.GOOGLE_CREDENTIALS_JSON.strip()
 
-        # --------------------------------------------------------
-        # OPCIÓN 1: RENDER
-        # --------------------------------------------------------
         if credentials_json:
             try:
                 info = json.loads(credentials_json)
@@ -64,12 +68,10 @@ class SheetsService:
 
             except Exception as e:
                 raise Exception(
-                    f"Error leyendo GOOGLE_CREDENTIALS_JSON: {str(e)}"
+                    "Error leyendo GOOGLE_CREDENTIALS_JSON: "
+                    f"{str(e)}"
                 )
 
-        # --------------------------------------------------------
-        # OPCIÓN 2: COMPUTADORA LOCAL
-        # --------------------------------------------------------
         else:
             archivo = Config.GOOGLE_CREDENTIALS_FILE
 
@@ -89,10 +91,6 @@ class SheetsService:
                 f"Google Sheets: usando archivo {archivo}"
             )
 
-        # --------------------------------------------------------
-        # CONECTAR
-        # --------------------------------------------------------
-
         self._client = gspread.authorize(creds)
 
         self._spreadsheet = self._client.open(
@@ -100,7 +98,7 @@ class SheetsService:
         )
 
         print(
-            f"Google Sheets conectado correctamente: "
+            "Google Sheets conectado correctamente: "
             f"{Config.GOOGLE_SHEET_NAME}"
         )
 
@@ -123,42 +121,279 @@ class SheetsService:
         )
 
     # ============================================================
-    # ASISTENCIAS
+    # UTILIDADES DE HORA
+    # ============================================================
+
+    @staticmethod
+    def _hora_corta(valor: str) -> str:
+        """
+        Convierte una hora ISO como:
+
+        2026-08-27T07:05:23.123
+
+        en:
+
+        07:05:23
+        """
+
+        valor = str(valor or "").strip()
+
+        if not valor:
+            return ""
+
+        if "T" in valor:
+            valor = valor.split("T", 1)[1]
+
+        if "." in valor:
+            valor = valor.split(".", 1)[0]
+
+        if "Z" in valor:
+            valor = valor.replace("Z", "")
+
+        if "+" in valor:
+            valor = valor.split("+", 1)[0]
+
+        return valor[:8]
+
+    # ============================================================
+    # DUPLICADOS
     # ============================================================
 
     def id_ya_existe(self, id_registro: str) -> bool:
         """
-        Tu hoja actual no tiene la columna ID Registro.
+        La hoja actual no tiene columna de ID.
 
-        Por ahora permitimos guardar los registros.
+        Se mantiene False para conservar compatibilidad
+        con el sistema actual.
         """
+
         return False
 
-    def agregar_asistencia(self, registro: dict) -> None:
+    # ============================================================
+    # BUSCAR ENTRADA PENDIENTE
+    # ============================================================
+
+    def buscar_entrada_pendiente(
+        self,
+        codigo: str,
+        fecha: str,
+    ) -> Optional[int]:
         """
-        Guarda una asistencia usando exactamente las columnas
-        actuales de tu hoja:
-        Codigo | Nombre Completo | CARGO | Fecha | Entrada |
-        Salida | Minutos tarde | Horas extras | Horas trabajadas
+        Busca una fila que tenga:
+
+        mismo código
+        misma fecha
+        entrada existente
+        salida vacía
+
+        Devuelve el número de fila de Google Sheets.
         """
 
         hoja = self._hoja_asistencias()
+
+        filas = hoja.get_all_values()
+
+        if len(filas) <= 1:
+            return None
+
+        codigo = str(codigo).strip().upper()
+        fecha = str(fecha).strip()
+
+        # Saltamos la fila 1 porque contiene encabezados.
+        for numero_fila, fila in enumerate(
+            filas[1:],
+            start=2,
+        ):
+            if len(fila) < 6:
+                continue
+
+            codigo_fila = str(
+                fila[0]
+            ).strip().upper()
+
+            fecha_fila = str(
+                fila[3]
+            ).strip()
+
+            entrada_fila = str(
+                fila[4]
+            ).strip()
+
+            salida_fila = str(
+                fila[5]
+            ).strip()
+
+            if (
+                codigo_fila == codigo
+                and fecha_fila == fecha
+                and entrada_fila
+                and not salida_fila
+            ):
+                return numero_fila
+
+        return None
+
+    # ============================================================
+    # AGREGAR ASISTENCIA
+    # ============================================================
+
+    def agregar_asistencia(
+        self,
+        registro: dict,
+    ) -> None:
+        """
+        Decide automáticamente si es entrada o salida.
+        """
+
+        entrada = str(
+            registro.get("entrada", "")
+        ).strip()
+
+        salida = str(
+            registro.get("salida", "")
+        ).strip()
+
+        if entrada and not salida:
+            self._agregar_entrada(registro)
+            return
+
+        if salida and not entrada:
+            self._agregar_salida(registro)
+            return
+
+        raise Exception(
+            "El registro debe contener una entrada "
+            "o una salida."
+        )
+
+    # ============================================================
+    # ENTRADA
+    # ============================================================
+
+    def _agregar_entrada(
+        self,
+        registro: dict,
+    ) -> None:
+        """
+        Crea una fila nueva.
+
+        Columnas:
+
+        A Código
+        B Nombre Completo
+        C CARGO
+        D Fecha
+        E Entrada
+        F Salida
+        G Minutos tarde
+        H Horas trabajadas
+        I Horas extras
+        """
+
+        hoja = self._hoja_asistencias()
+
+        hora = self._hora_corta(
+            registro.get("entrada", "")
+        )
 
         fila = [
             registro.get("codigo", ""),
             registro.get("nombre_completo", ""),
             registro.get("cargo", ""),
             registro.get("fecha", ""),
-            registro.get("entrada", ""),
-            registro.get("salida", ""),
+            hora,
+            "",
             registro.get("minutos_tarde", 0),
-            registro.get("horas_extras", ""),
-            registro.get("horas_trabajadas", ""),
+            "",
+            "",
         ]
 
         hoja.append_row(
             fila,
             value_input_option="USER_ENTERED",
+        )
+
+        print(
+            "ENTRADA GUARDADA EN SHEETS: "
+            f"{registro.get('codigo')} "
+            f"{registro.get('fecha')} "
+            f"{hora}"
+        )
+
+    # ============================================================
+    # SALIDA
+    # ============================================================
+
+    def _agregar_salida(
+        self,
+        registro: dict,
+    ) -> None:
+        """
+        Completa la fila donde ya existe la entrada.
+        """
+
+        hoja = self._hoja_asistencias()
+
+        codigo = str(
+            registro.get("codigo", "")
+        ).strip().upper()
+
+        fecha = str(
+            registro.get("fecha", "")
+        ).strip()
+
+        fila_numero = self.buscar_entrada_pendiente(
+            codigo,
+            fecha,
+        )
+
+        if fila_numero is None:
+            raise Exception(
+                "No se encontró una entrada pendiente "
+                f"para {codigo} en {fecha}."
+            )
+
+        hora_salida = self._hora_corta(
+            registro.get("salida", "")
+        )
+
+        horas_trabajadas = registro.get(
+            "horas_trabajadas",
+            "",
+        )
+
+        horas_extras = registro.get(
+            "horas_extras",
+            "",
+        )
+
+        # F = Salida
+        hoja.update_cell(
+            fila_numero,
+            6,
+            hora_salida,
+        )
+
+        # H = Horas trabajadas
+        hoja.update_cell(
+            fila_numero,
+            8,
+            horas_trabajadas,
+        )
+
+        # I = Horas extras
+        hoja.update_cell(
+            fila_numero,
+            9,
+            horas_extras,
+        )
+
+        print(
+            "SALIDA COMPLETADA EN SHEETS: "
+            f"{codigo} "
+            f"{fecha} "
+            f"{hora_salida} "
+            f"fila={fila_numero}"
         )
 
     # ============================================================
@@ -173,41 +408,69 @@ class SheetsService:
         empleados = []
 
         for f in filas:
-            empleados.append({
-                "codigo": str(
+            codigo = str(
+                f.get(
+                    "Código",
                     f.get(
-                        "Código",
-                        f.get("Codigo", ""),
-                    )
-                ).strip(),
+                        "Codigo",
+                        "",
+                    ),
+                )
+            ).strip()
+
+            empleados.append({
+                "codigo": codigo,
 
                 "nombre_completo": str(
-                    f.get("Nombre Completo", "")
+                    f.get(
+                        "Nombre Completo",
+                        "",
+                    )
                 ).strip(),
 
                 "cargo": str(
                     f.get(
                         "Cargo",
-                        f.get("CARGO", ""),
+                        f.get(
+                            "CARGO",
+                            "",
+                        ),
                     )
                 ).strip(),
 
                 "usuario": str(
-                    f.get("Usuario", "")
+                    f.get(
+                        "Usuario",
+                        "",
+                    )
                 ).strip(),
 
                 "rol": str(
-                    f.get("Rol", "empleado")
+                    f.get(
+                        "Rol",
+                        "empleado",
+                    )
                 ).strip() or "empleado",
 
                 "activo": str(
-                    f.get("Activo", "SI")
+                    f.get(
+                        "Activo",
+                        "SI",
+                    )
                 ).strip().upper() != "NO",
             })
 
         return empleados
 
-    def agregar_empleado(self, empleado: dict) -> None:
+    # ============================================================
+    # CREAR EMPLEADO
+    # ============================================================
+
+    def agregar_empleado(
+        self,
+        empleado: dict,
+    ) -> None:
+
         hoja = self._hoja_empleados()
 
         hoja.append_row([
@@ -218,6 +481,10 @@ class SheetsService:
             empleado.get("rol", "empleado"),
             "SI",
         ])
+
+    # ============================================================
+    # ACTUALIZAR EMPLEADO
+    # ============================================================
 
     def actualizar_empleado(
         self,
@@ -232,7 +499,9 @@ class SheetsService:
         if codigo not in columna_codigos:
             return False
 
-        fila_idx = columna_codigos.index(codigo) + 1
+        fila_idx = (
+            columna_codigos.index(codigo) + 1
+        )
 
         mapeo = {
             "nombre_completo": 2,
@@ -242,7 +511,11 @@ class SheetsService:
         }
 
         for clave, columna in mapeo.items():
-            if clave in cambios and cambios[clave] is not None:
+
+            if (
+                clave in cambios
+                and cambios[clave] is not None
+            ):
                 hoja.update_cell(
                     fila_idx,
                     columna,
@@ -251,7 +524,15 @@ class SheetsService:
 
         return True
 
-    def desactivar_empleado(self, codigo: str) -> bool:
+    # ============================================================
+    # DESACTIVAR EMPLEADO
+    # ============================================================
+
+    def desactivar_empleado(
+        self,
+        codigo: str,
+    ) -> bool:
+
         hoja = self._hoja_empleados()
 
         columna_codigos = hoja.col_values(1)
@@ -259,7 +540,9 @@ class SheetsService:
         if codigo not in columna_codigos:
             return False
 
-        fila_idx = columna_codigos.index(codigo) + 1
+        fila_idx = (
+            columna_codigos.index(codigo) + 1
+        )
 
         hoja.update_cell(
             fila_idx,
